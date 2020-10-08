@@ -1,0 +1,2 @@
+*.xml linguist-documentation=false
+*.ino linguist-language=Arduino

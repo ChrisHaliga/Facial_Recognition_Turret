@@ -1,6 +1,11 @@
 import face_recognition as fr
+import numpy as np
 import cv2
 import serial
+
+
+TOLERANCE = 50
+known = [fr.face_encodings(fr.load_image_file('./img/known/MorganFreeman.jpg'))[0]]
 
 
 def compare(known, unknown):
@@ -11,7 +16,42 @@ def compare(known, unknown):
 
     return False
 
+
+def findTarget(feed, faces):
+    print("evaluating faces")
+    f_h, f_w, channels = feed.shape
+    for face in faces:
+        (x, y, w, h) = face
+        x -= 20
+        y -= 20
+        w += 20
+        h += 20
+        if x < 0:
+            x = 0
+        if y < 0:
+            y = 0
+        if w > f_w:
+            w = f_w
+        if h > f_h:
+            h = f_h
+
+        img = feed[y:y + h, x:x + w]
+        eface = fr.face_encodings(img)
+        if len(eface) > 0:
+            eface = eface[0]
+            bad = True
+            for safe in known:
+                if bad and compare(safe, eface):
+                    bad = False
+                    cv2.rectangle(feed, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    print("not a target")
+            if bad:
+                print("target acquired")
+                return face
+
+
 def main():
+    ser = serial.Serial("COM3", 9600)
     cameras = []
     for x in range(10):
         cam = cv2.VideoCapture(x)
@@ -22,59 +62,44 @@ def main():
     views = len(cameras)
     current_view = 0
 
-    goodguys = []
-    badguys = []
-    ser = serial.Serial("COM3", 9600)  # open serial port that Arduino is using
+    target = None
+    time_missing = 0
     while True:
         ret, feed = cameras[0].read()
         f_h, f_w, channels = feed.shape
         ch = cv2.waitKey(1)
         if ch == ord('q') or ch == 27:
             break
-        if ch == ord('d'):
-            goodguys = []
-            badguys = []
-        if ch == 32:
-            goodguys = []
-            badguys = []
-            known = fr.load_image_file('./img/known/me.jpg')
-            known = fr.face_encodings(known)[0]
+        gray = cv2.cvtColor(feed, cv2.COLOR_BGR2GRAY)
+        path = "haarcascade_frontalface_default.xml"
 
-            faces = fr.face_locations(feed)
-            for (top, right, bottom, left) in faces:
-                t = top - 25
-                if t < 0:
-                    t = 0
-                r = right + 25
-                if r > f_w:
-                    t = f_w
-                b = bottom + 25
-                if t > f_h:
-                    t = f_h
-                l = left - 25
-                if t < 0:
-                    t = 0
+        face_cascade = cv2.CascadeClassifier(path)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.10, minNeighbors=5, minSize=(80, 80))
 
-                img = feed[t:b, l:r]     
-                face = fr.face_encodings(img)
-                if len(face) > 0:
-                    face = face[0]
-                    x = str(round(90*(((left + right) / 2 - f_w / 2))/f_w))
-                    y = str(round(90*(((top + bottom) / 2 - f_h / 2))/f_h))
-                    if compare(known, face):
-                        goodguys.append((left, top, right, bottom))
-                    else:
-                        badguys.append((left, top, right, bottom))
-                    ser.write((x + "," + y + ";").encode())
-                    print((x + "," + y + ";"))
+        if time_missing >= 20:
+            target = None
+            ser.write(("x" + str(-181) + "," + str(-181) + "y").encode())
 
-
-        for (left, top, right, bottom) in goodguys:
-            feed = cv2.rectangle(feed, (left, top), (right, bottom), (0, 255, 0), 2)
-        for (left, top, right, bottom) in badguys:
-            feed = cv2.rectangle(feed, (left, top), (right, bottom), (0, 0, 255), 2)
+        found = False
+        if target is not None:
+            if len(faces) >= 1:
+                target = faces[0]
+                found = True
+            else:
+                time_missing += 1
+        elif len(faces) >= 1:
+            target = findTarget(feed, faces)
+            if target is not None:
+                found = True
+        if found:
+            (x, y, w, h) = target
+            x_out = int(round(90 * (((x + x+w)/2 - f_w/2)) / f_w))
+            y_out = int(round(90 * (((y + y+h)/2 - f_h/2)) / f_h))
+            if abs(y_out) > 10 or abs(y_out) > 10:
+                ser.write(("x" + str(x_out) + "," + str(y_out) + "y").encode())
+                print(ser.readline())
+            cv2.rectangle(feed, (x, y), (x + w, y + h), (0, 0, 255), 2)
         cv2.imshow("Camera", feed)
-        #ser.read()
     ser.close()
     for cam in cameras:
         cam.release()

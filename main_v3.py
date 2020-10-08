@@ -1,19 +1,40 @@
 import face_recognition as fr
-import numpy as np
 import cv2
 import serial
 
+import _thread
+import time
 
 TOLERANCE = 50
 known = [fr.face_encodings(fr.load_image_file('./img/known/MorganFreeman.jpg'))[0]]
+queue = ""
+reset = False
+ser = serial.Serial("COM3", 9600)
+connected = True
+
+# The Arduino couldn't handle the entourage of coordinates - This lowers the rate, but maintains the accuracy
+def servo_loop():
+    global queue
+    global reset
+    global ser
+    global connected
+    print("Thread Created")
+    while connected:
+        time.sleep(1.5)
+        if queue != "":
+            print("sending: {}".format(queue))
+            ser.write(queue.encode())
+            queue = ""
+        elif reset:
+            ser.write("181,181;".encode())
+            reset = False
+    ser.close()
 
 
 def compare(known, unknown):
     same = fr.compare_faces([known], unknown)
-
     if same[0]:
         return True
-
     return False
 
 
@@ -51,7 +72,15 @@ def findTarget(feed, faces):
 
 
 def main():
-    ser = serial.Serial("COM3", 9600)
+    global queue
+    global connected
+    global reset
+    connected = True
+    try:
+        _thread.start_new_thread(servo_loop, ())
+    except:
+        print("Error: unable to start thread")
+        connected = False
     cameras = []
     for x in range(10):
         cam = cv2.VideoCapture(x)
@@ -59,8 +88,6 @@ def main():
             cam.release()
         else:
             cameras.append(cam)
-    views = len(cameras)
-    current_view = 0
 
     target = None
     time_missing = 0
@@ -74,11 +101,8 @@ def main():
         path = "haarcascade_frontalface_default.xml"
 
         face_cascade = cv2.CascadeClassifier(path)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.10, minNeighbors=5, minSize=(80, 80))
 
-        if time_missing >= 20:
-            target = None
-            ser.write(("x" + str(-181) + "," + str(-181) + "y").encode())
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.10, minNeighbors=5, minSize=(70, 70))
 
         found = False
         if target is not None:
@@ -91,16 +115,21 @@ def main():
             target = findTarget(feed, faces)
             if target is not None:
                 found = True
+
         if found:
+            time_missing = 0
             (x, y, w, h) = target
-            x_out = int(round(90 * (((x + x+w)/2 - f_w/2)) / f_w))
-            y_out = int(round(90 * (((y + y+h)/2 - f_h/2)) / f_h))
-            if abs(y_out) > 10 or abs(y_out) > 10:
-                ser.write(("x" + str(x_out) + "," + str(y_out) + "y").encode())
-                print(ser.readline())
+            x_out = str(int(15 + round(90 * (((x + x+w)/2 - f_w/2)) / f_w)))
+            y_out = str(int(20+-1*round(90 * (((y + y+h)/2 - f_h/2)) / f_h)))
+            queue = (x_out + "," + y_out + ";")
+            print((x_out + "," + y_out + ";"))
             cv2.rectangle(feed, (x, y), (x + w, y + h), (0, 0, 255), 2)
+        elif time_missing > 20:
+            reset = True
+            target = None
+            time_missing = 0
         cv2.imshow("Camera", feed)
-    ser.close()
+    connected = False
     for cam in cameras:
         cam.release()
     cv2.destroyAllWindows()
